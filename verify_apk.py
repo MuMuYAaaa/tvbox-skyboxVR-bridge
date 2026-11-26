@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 root = Path(__file__).resolve().parent
 import argparse
 parser = argparse.ArgumentParser()
-parser.add_argument('--apk', type=Path, default=root/'dist/TVBox-Skybox-Bridge-v0.2.0-arm64.apk')
+parser.add_argument('--apk', type=Path, default=root/'dist/TVBox-Skybox-Bridge-v0.3.0-arm64.apk')
 apk = parser.parse_args().apk.resolve()
 v = root / 'verification'
 with ZipFile(root / 'original.apk') as original, ZipFile(apk) as final:
@@ -50,6 +50,12 @@ service = next(s for s in services if s.attrib[ns+'name'] == 'com.github.tvbox.o
 assert service.attrib[ns+'exported'] == 'false'
 assert service.attrib[ns+'foregroundServiceType'] == 'mediaPlayback'
 assert (v/'smali_classes3/com/github/tvbox/osc/skybox/StreamRelay.smali').is_file()
+service_code = (v/'smali_classes3/com/github/tvbox/osc/skybox/StreamProxyService.smali').read_text(encoding='utf-8')
+service_nested = '\n'.join(p.read_text(encoding='utf-8') for p in (v/'smali_classes3/com/github/tvbox/osc/skybox').glob('StreamProxyService*.smali'))
+assert 'shouldStopWhenUnattended()Z' in service_nested
+assert 'Landroid/os/PowerManager$WakeLock;->acquire()V' in service_code
+assert 'Landroid/net/wifi/WifiManager$WifiLock;->acquire()V' in service_code
+assert 'android.permission.WAKE_LOCK' in permissions
 report = {
     'input_sha256': hashlib.sha256((root/'original.apk').read_bytes()).hexdigest(),
     'output_sha256': hashlib.sha256(apk.read_bytes()).hexdigest(),
@@ -61,12 +67,14 @@ report = {
     'dex_checksums': 'passed for classes.dex, classes2.dex and classes3.dex',
     'roundtrip_decode_and_static_playback_wiring': 'passed',
     'handoff_contract_tests': '10 scenarios passed using JVM Android API doubles',
-    'stream_relay_tests': 'Real local HTTP integration suite passed; see tests/test_stream_relay.py',
+    'stream_relay_tests': '26 real local HTTP integration scenarios; see tests/test_stream_relay.py',
+    'service_lifecycle_tests': 'Production service with Android API doubles: virtual 31-minute buffering, explicit stop and resource release passed',
+    'version_code': 3,
     'apk_signature_schemes': 'v1, v2, v3 verified with Android apksigner',
     'zip_alignment': 'passed zipalign -c -p 4',
     'permissions': permissions,
     'headset_runtime_test': 'not performed',
-    'scope': 'Video-on-demand external playback with header-preserving loopback relay and HLS rewrite; live TV playback was not modified',
+    'scope': 'Long-playback session ownership, CPU/Wi-Fi protection, validated range resumption and cookie rotation; source URL renewal is not implemented',
     'reference': 'https://github.com/Predidit/Kazumi/blob/main/android/app/src/main/kotlin/com/example/kazumi/MainActivity.kt#L169-L174'
 }
 (apk.parent / 'validation.json').write_text(json.dumps(report, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')

@@ -52,12 +52,16 @@ try {
     $env:JAVA_HOME = $JdkDirectory
     if (-not $SkipTests) {
         Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'tests\test_handoff.py'))
+        Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'tests\test_service_lifecycle.py'))
         Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'tests\test_stream_relay.py'))
     }
     Save-PreviousDirectory (Join-Path $taskRoot 'decoded')
     Invoke-Checked $java @('-jar',$ApktoolJar,'d',$originalApk,'-o',(Join-Path $taskRoot 'decoded'),'-p',(Join-Path $taskRoot 'tools\framework'))
     Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'patch.py'))
     Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'patch_v2.py'))
+    Invoke-Checked $PythonExecutable @((Join-Path $taskRoot 'patch_v3.py'))
+    Save-PreviousDirectory (Join-Path $taskRoot 'build\classes')
+    New-Item -ItemType Directory -Path (Join-Path $taskRoot 'build\classes') -Force | Out-Null
     $sourceFiles = @(Get-ChildItem -LiteralPath (Join-Path $taskRoot 'src\com\github\tvbox\osc\skybox') -Filter '*.java' | ForEach-Object FullName)
     $compilerArguments = @('--release','8','-Xlint:-options','-encoding','UTF-8','-cp',$androidJar,'-d',(Join-Path $taskRoot 'build\classes')) + $sourceFiles
     Invoke-Checked $javac $compilerArguments
@@ -81,7 +85,7 @@ try {
     }
     $Keystore = (Resolve-Path -LiteralPath $Keystore).Path
     $PasswordFile = (Resolve-Path -LiteralPath $PasswordFile).Path
-    $outputApk = Join-Path $taskRoot 'dist\TVBox-Skybox-Bridge-v0.2.0-arm64.apk'
+    $outputApk = Join-Path $taskRoot 'dist\TVBox-Skybox-Bridge-v0.3.0-arm64.apk'
     Invoke-Checked $java @('-jar',(Join-Path $buildTools 'lib\apksigner.jar'),'sign','--ks',$Keystore,'--ks-pass',('file:'+$PasswordFile),'--ks-key-alias',$KeyAlias,'--v1-signing-enabled','true','--v2-signing-enabled','true','--v3-signing-enabled','true','--out',$outputApk,(Join-Path $taskRoot 'build\tvbox-aligned.apk'))
     Invoke-Checked $java @('-jar',(Join-Path $buildTools 'lib\apksigner.jar'),'verify',$outputApk)
     Invoke-Checked (Join-Path $buildTools 'zipalign.exe') @('-c','-p','4',$outputApk)

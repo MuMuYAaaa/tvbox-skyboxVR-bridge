@@ -10,7 +10,7 @@ public final class StreamDiagnosticsActivity extends Activity {
         super.onCreate(saved);
         setTitle("SKYBOX 播放诊断");
         TextView text = new TextView(this);
-        text.setText(StreamProxyService.diagnostic());
+        text.setText(StreamProxyService.diagnostic(this));
         text.setTextSize(18);
         text.setPadding(24, 24, 24, 24);
         text.setTextIsSelectable(true);

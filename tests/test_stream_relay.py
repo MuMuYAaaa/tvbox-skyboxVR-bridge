@@ -13,6 +13,7 @@ import re
 import subprocess
 import os
 import shutil
+import socket
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,10 +33,11 @@ KEY = b"0123456789abcdef"
 INIT = b"fixture-init-mp4"
 SEGMENT = b"G" + bytes(range(187))
 
-HARNESS = r'''import com.github.tvbox.osc.skybox.StreamRelay;
+HARNESS = r'''package com.github.tvbox.osc.skybox;
 import java.io.*;
 import java.util.*;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.atomic.AtomicLong;
 public final class RelayIntegrationHarness {
     public static void main(String[] args) throws Exception {
         Map<String,String> headers = new LinkedHashMap<>();
@@ -45,12 +47,19 @@ public final class RelayIntegrationHarness {
         headers.put("Host", "must-not-use.invalid");
         headers.put("Accept-Encoding", "gzip");
         headers.put("Range", "bytes=999-1000");
-        try (StreamRelay relay = new StreamRelay(args[0], headers)) {
+        final AtomicLong virtualOffset = new AtomicLong();
+        StreamRelay.Clock clock = new StreamRelay.Clock() { public long nanoTime() { return System.nanoTime()+virtualOffset.get(); } };
+        try (StreamRelay relay = new StreamRelay(args[0], headers, clock)) {
             System.out.println(relay.mediaUrl());
             System.out.flush();
             BufferedReader input = new BufferedReader(new InputStreamReader(System.in, StandardCharsets.UTF_8));
             for (String line; (line = input.readLine()) != null;) {
                 if (line.equals("CLOSE")) break;
+                if (line.startsWith("AGE ")) {
+                    virtualOffset.addAndGet(Long.parseLong(line.substring(4))*1000000L);
+                    System.out.println("AGED"); System.out.flush();
+                }
+                if (line.equals("POLICY")) { System.out.println(relay.shouldStopWhenUnattended()); System.out.flush(); }
                 if (line.equals("DIAG")) {
                     System.out.println(Base64.getEncoder().encodeToString(relay.diagnostic().getBytes(StandardCharsets.UTF_8))
                         + "\t" + relay.needsAttention());
@@ -66,6 +75,9 @@ class Origin(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     records: list[dict] = []
     lock = threading.Lock()
+    transient_count = 0
+    slow_started = threading.Event()
+    slow_continue = threading.Event()
 
     def log_message(self, *args):
         pass
@@ -89,10 +101,50 @@ class Origin(BaseHTTPRequestHandler):
                "cookies": self.headers.get_all("Cookie", [])}
         with self.lock:
             self.records.append(row)
+        path = urlsplit(self.path).path
+        if path == "/cookie-after":
+            return self.send(200 if self.headers.get("Cookie") == "fixture_auth=rotated_session" else 403, MEDIA, "video/mp4")
         if (self.headers.get("Referer") != REFERER or self.headers.get("User-Agent") != AGENT
                 or COOKIE not in "; ".join(row["cookies"])):
             return self.send(403, b"missing fixture headers", "text/plain")
-        path = urlsplit(self.path).path
+        if path == "/cookie-rotate":
+            return self.send(200, b"#EXTM3U\n#EXTINF:1,\ncookie-after\n#EXT-X-ENDLIST\n", "application/vnd.apple.mpegurl",
+                             {"Set-Cookie":"fixture_auth=rotated_session; Path=/"})
+        if path == "/transient.mp4":
+            with self.lock:
+                Origin.transient_count += 1
+                attempt = Origin.transient_count
+            return self.send(503, b"temporarily unavailable") if attempt == 1 else self.send(200, MEDIA, "video/mp4")
+        if path == "/slow-first.mp4":
+            Origin.slow_started.set()
+            Origin.slow_continue.wait(timeout=5)
+            return self.send(200, MEDIA, "video/mp4")
+        if path.startswith("/flaky") or path.startswith("/resume-"):
+            requested = self.headers.get("Range")
+            match = re.fullmatch(r"bytes=(\d+)-(\d*)", requested or "")
+            start = int(match[1]) if match else 0
+            end = int(match[2]) if match and match[2] else len(MEDIA)-1
+            is_resume = self.headers.get("If-Range") == '"stable-media"'
+            if is_resume and path == "/resume-ignore.mp4":
+                return self.send(200, MEDIA, "video/mp4", {"ETag":'"stable-media"'})
+            if is_resume:
+                tag = '"different-media"' if path == "/resume-change.mp4" else '"stable-media"'
+                actual_start = start+1 if path == "/resume-offset.mp4" else start
+                return self.send(206, MEDIA[actual_start:end+1], "video/mp4",
+                                 {"ETag":tag,"Content-Range":f"bytes {actual_start}-{end}/{len(MEDIA)}"})
+            payload=MEDIA[start:end+1]
+            self.send_response(206 if requested else 200)
+            self.send_header("Content-Type","video/mp4")
+            self.send_header("Content-Length",str(len(payload)))
+            self.send_header("ETag",'"stable-media"')
+            self.send_header("Accept-Ranges","bytes")
+            self.send_header("Connection","close")
+            if requested: self.send_header("Content-Range",f"bytes {start}-{end}/{len(MEDIA)}")
+            self.end_headers()
+            self.wfile.write(payload[:1024]);self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            return
         if path == "/entry":
             return self.send(302, extra={"Location": "/catalog/master?redirect_sig=redirect_secret%2B",
                                          "Set-Cookie": "relay_session=session_secret; Path=/"})
@@ -172,7 +224,7 @@ class Origin(BaseHTTPRequestHandler):
 class Relay:
     def __init__(self, url):
         self.process = subprocess.Popen([str(JAVA), "-cp", str(WORK / "classes"),
-                                         "RelayIntegrationHarness", url],
+                                         "com.github.tvbox.osc.skybox.RelayIntegrationHarness", url],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True, encoding="utf-8")
         self.url = self.process.stdout.readline().strip()
@@ -192,6 +244,14 @@ class Relay:
         stdout, stderr = self.process.communicate(timeout=10)
         if self.process.returncode:
             raise RuntimeError(f"Harness exited {self.process.returncode}: {stderr}")
+
+    def age(self, millis):
+        self.process.stdin.write(f"AGE {millis}\n"); self.process.stdin.flush()
+        assert self.process.stdout.readline().strip() == "AGED"
+
+    def should_stop(self):
+        self.process.stdin.write("POLICY\n"); self.process.stdin.flush()
+        return self.process.stdout.readline().strip() == "true"
 
 
 def request(url, method="GET", headers=None):
@@ -235,6 +295,8 @@ class RelayIntegration(unittest.TestCase):
     def setUp(self):
         with Origin.lock:
             Origin.records.clear()
+            Origin.transient_count=0
+        Origin.slow_started.clear(); Origin.slow_continue.clear()
         self.relays = []
 
     def tearDown(self):
@@ -406,6 +468,70 @@ class RelayIntegration(unittest.TestCase):
         self.assertTrue(child_urls[0].startswith("http://127.0.0.1:"))
         self.assertEqual(request(child_urls[0])[2], SEGMENT)
         self.assertIn("/segments/one.ts?bom_sig=bom_secret", [row["path"] for row in Origin.records])
+
+    def test_buffered_session_survives_31_minutes_of_virtual_idle(self):
+        relay=self.relay("/movie.mp4")
+        self.assertEqual(request(relay.url)[2],MEDIA)
+        relay.age(31*60*1000)
+        self.assertFalse(relay.should_stop(),"buffering must not revoke a live playback session")
+        self.assertEqual(request(relay.url,headers={"Range":"bytes=4096-"})[2],MEDIA[4096:])
+
+    def test_only_never_started_idle_sessions_are_reaped(self):
+        relay=self.relay("/movie.mp4")
+        self.assertFalse(relay.should_stop())
+        relay.age(121000)
+        self.assertTrue(relay.should_stop())
+
+    def test_inflight_first_request_is_not_reaped(self):
+        relay=self.relay("/slow-first.mp4")
+        result=[]
+        worker=threading.Thread(target=lambda:result.append(request(relay.url)))
+        worker.start()
+        self.assertTrue(Origin.slow_started.wait(timeout=3))
+        relay.age(31*60*1000)
+        self.assertFalse(relay.should_stop())
+        Origin.slow_continue.set();worker.join(timeout=6)
+        self.assertEqual(result[0][2],MEDIA)
+
+    def test_short_body_recovers_without_duplicate_bytes(self):
+        relay=self.relay("/flaky.mp4")
+        self.assertEqual(request(relay.url)[2],MEDIA)
+        self.assertEqual(Origin.records[-1]["headers"].get("Range"),"bytes=1024-8191")
+        self.assertEqual(Origin.records[-1]["headers"].get("If-Range"),'"stable-media"')
+        self.assertIn("恢复次数：1",relay.diagnostic()[0])
+
+    def test_interrupted_seek_resumes_from_absolute_offset(self):
+        relay=self.relay("/flaky-range.mp4")
+        self.assertEqual(request(relay.url,headers={"Range":"bytes=2048-4095"})[2],MEDIA[2048:4096])
+        self.assertEqual(Origin.records[-1]["headers"]["Range"],"bytes=3072-4095")
+
+    def test_ignored_resume_range_is_not_appended(self):
+        relay=self.relay("/resume-ignore.mp4")
+        with self.assertRaises(http.client.IncompleteRead) as error: request(relay.url)
+        self.assertEqual(error.exception.partial,MEDIA[:1024])
+        self.assertTrue(relay.diagnostic()[1])
+
+    def test_changed_representation_is_not_appended(self):
+        relay=self.relay("/resume-change.mp4")
+        with self.assertRaises(http.client.IncompleteRead) as error: request(relay.url)
+        self.assertEqual(error.exception.partial,MEDIA[:1024])
+
+    def test_wrong_resume_offset_is_not_appended(self):
+        relay=self.relay("/resume-offset.mp4")
+        with self.assertRaises(http.client.IncompleteRead) as error: request(relay.url)
+        self.assertEqual(error.exception.partial,MEDIA[:1024])
+
+    def test_transient_http_failure_is_retried(self):
+        relay=self.relay("/transient.mp4")
+        self.assertEqual(request(relay.url)[2],MEDIA)
+        self.assertEqual(Origin.transient_count,2)
+        self.assertIn("恢复次数：1",relay.diagnostic()[0])
+
+    def test_rotated_cookie_replaces_stale_cookie(self):
+        relay=self.relay("/cookie-rotate")
+        root=request(relay.url)[2]
+        self.assertEqual(request(lines(root)[0])[0],200)
+        self.assertEqual(Origin.records[-1]["headers"]["Cookie"],"fixture_auth=rotated_session")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,43 @@
+{
+  "input_sha256": "c3aee40419fe9cef88dbac99aa7aff6e26503f8fb5e3dd1dd07e46e8e28b3c02",
+  "output_sha256": "e807f690476feb073ba58e1ec15eadede5105106ec62636651399a6b4ce8ab3d",
+  "output_bytes": 20946495,
+  "package": "com.github.tvbox.osc.jun.skybox",
+  "preserved_native_and_asset_entries": 23,
+  "zip_integrity": "passed",
+  "original_payload_and_filename_bytes": "passed",
+  "dex_checksums": "passed for classes.dex, classes2.dex and classes3.dex",
+  "roundtrip_decode_and_static_playback_wiring": "passed",
+  "handoff_contract_tests": "10 scenarios passed using JVM Android API doubles",
+  "stream_relay_tests": "16 real HTTP integration tests passed",
+  "apk_signature_schemes": "v1, v2, v3 verified with Android apksigner",
+  "zip_alignment": "passed zipalign -c -p 4",
+  "permissions": [
+    "android.permission.INTERNET",
+    "android.permission.ACCESS_NETWORK_STATE",
+    "android.permission.ACCESS_WIFI_STATE",
+    "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.ACCESS_FINE_LOCATION",
+    "android.permission.REQUEST_INSTALL_PACKAGES",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.READ_PHONE_STATE",
+    "android.permission.WAKE_LOCK",
+    "android.permission.GET_TASKS",
+    "android.permission.MOUNT_UNMOUNT_FILESYSTEMS"
+  ],
+  "headset_runtime_test": {
+    "status": "user-confirmed",
+    "date": "2026-11-26",
+    "device": "Meta Quest 3S",
+    "skybox": "Official store 1.2.2",
+    "result": "User reported playback working with v2; not independently observed by the AI"
+  },
+  "scope": "Video-on-demand external playback with header-preserving loopback relay and HLS rewrite; live TV playback was not modified",
+  "reference": "https://github.com/Predidit/Kazumi/blob/main/android/app/src/main/kotlin/com/example/kazumi/MainActivity.kt#L169-L174",
+  "upgrade_certificate_matches_v1": true,
+  "certificate_sha256": "c795fd61ff0d155fcad64a006ed83cf2f87cb35ed1e2b2a2fbbfad9a038028de",
+  "version_code": 2,
+  "ai_development": "OpenAI Codex completed the added adapter, relay, patches, build integration, tests and documentation."
+}
